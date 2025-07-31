@@ -110,13 +110,66 @@ This implementation incorporates current best practices:
 - **Recovery**: Manual recovery process if keyfile corrupted
 - **Hardware Dependency**: Some features require specific ARM features
 
-### What Was Not Implemented (for simplicity)
+## What Was Not Implemented (Gaps Analysis)
 
-- **TPM Integration**: Not available on Orange Pi Zero3 hardware
-- **Secure Element**: Hardware security module integration
-- **Remote Attestation**: Network-based verification
-- **Multi-factor Authentication**: Additional unlock methods
-- **Hardware Security Keys**: External authentication tokens
+The problem statement asked "що було не враховано або упущено?" (what wasn't considered or missed?). Here are security features that could be implemented but were excluded for simplicity:
+
+### Hardware-Level Security (Not Available on Orange Pi Zero3)
+- **TPM 2.0 Integration**: Hardware not available on this platform
+- **Secure Element**: Would require additional hardware modules
+- **Hardware Security Module (HSM)**: External hardware needed
+- **ARM TrustZone Full Implementation**: Limited by bootloader capabilities
+
+### Advanced Authentication (Excluded for Simplicity)
+- **Multi-factor Authentication**: Would require additional setup complexity
+- **Hardware Security Keys (FIDO2/U2F)**: External hardware dependency
+- **Biometric Authentication**: Hardware not available
+- **Smart Card Integration**: Additional hardware required
+
+### Enterprise Security Features (Too Complex for "Simple Implementation")
+- **Remote Attestation**: Network infrastructure dependency
+- **Centralized Key Management**: Enterprise-level complexity
+- **Certificate-based Boot**: Complex PKI infrastructure needed
+- **Network Security Monitoring**: Requires dedicated monitoring infrastructure
+
+### Advanced Crypto Features (Balanced Approach Chosen)
+- **Multiple Key Slots**: Single keyfile approach simpler
+- **Key Escrow**: Enterprise feature not needed for basic security
+- **Hardware Key Derivation**: Limited hardware support
+- **Quantum-resistant Algorithms**: Not yet standardized for embedded
+
+## Modern 2025 Security Solutions Implemented
+
+Based on current 2025 security best practices, this implementation includes:
+
+### Core Encryption (Implemented)
+- **LUKS2 with AES-XTS-Plain64**: Latest encryption standard
+- **ARM Cryptography Extensions**: Hardware acceleration
+- **SHA-256 Key Derivation**: Strong hash functions
+- **Discard Support**: SSD/eMMC optimization
+
+### Modern System Hardening (Available via Enhanced Script)
+```bash
+# Run enhanced security hardening
+sudo orangepi-security-harden
+```
+
+Enhanced features include:
+- **Hardware RNG Integration**: Uses /dev/hwrng when available
+- **Memory Protection**: ASLR, stack protection, heap hardening
+- **Container Security**: Docker security profiles and namespace isolation
+- **Structured Audit Logging**: Modern auditd configuration
+- **Intrusion Detection**: fail2ban with custom rules
+- **File Integrity Monitoring**: AIDE for tamper detection
+- **Network Security**: Comprehensive firewall and network hardening
+- **AppArmor MAC**: Mandatory access control
+
+### 2025 Security Technologies Applied
+1. **Zero-Trust Architecture Principles**: Default deny, least privilege
+2. **Immutable Infrastructure Concepts**: Read-only boot, tamper detection
+3. **Cloud-Native Security**: Container hardening, microservice isolation
+4. **NIST Cybersecurity Framework**: Identify, Protect, Detect, Respond, Recover
+5. **OWASP Embedded Security**: Application layer protections
 
 ### Potential Enhancements
 
@@ -141,6 +194,23 @@ sudo orangepi-secure-setup
 
 # Check tamper detection status
 sudo systemctl status orangepi-tamper-detect
+
+# Validate security configuration
+sudo orangepi-security-check
+```
+
+### Enhanced Security (2025 Best Practices)
+
+```bash
+# Build with enhanced security features
+cp external/config/templates/config-enhanced-security.conf userpatches/config-enhanced.conf
+sudo ./build.sh enhanced
+
+# Apply comprehensive security hardening
+sudo orangepi-security-harden
+
+# Validate enhanced security
+sudo orangepi-security-check
 ```
 
 ### Advanced Configuration
