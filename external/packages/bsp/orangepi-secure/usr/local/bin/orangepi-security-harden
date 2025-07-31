@@ -1,0 +1,341 @@
+#!/bin/bash
+#
+# Orange Pi Zero3 Enhanced Security Hardening Script
+# Implements modern 2025 security practices and addresses gaps
+#
+
+set -e
+
+LOGFILE="/var/log/orangepi-security-hardening.log"
+
+log_action() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOGFILE"
+}
+
+# Enhanced entropy management (2025 best practice)
+setup_entropy_management() {
+    log_action "Setting up enhanced entropy management..."
+    
+    # Install and configure hardware RNG tools
+    apt-get install -y rng-tools haveged
+    
+    # Configure rng-tools for hardware RNG if available
+    if [ -c /dev/hwrng ]; then
+        log_action "Hardware RNG detected, configuring rng-tools"
+        echo 'HRNGDEVICE=/dev/hwrng' >> /etc/default/rng-tools
+        systemctl enable rng-tools
+    fi
+    
+    # Configure haveged for additional entropy
+    systemctl enable haveged
+    systemctl start haveged
+    
+    log_action "Entropy management configured"
+}
+
+# Container security enhancements
+setup_container_security() {
+    log_action "Setting up container security enhancements..."
+    
+    # Create Docker security configuration
+    mkdir -p /etc/docker
+    cat > /etc/docker/daemon.json << 'EOF'
+{
+    "userns-remap": "default",
+    "no-new-privileges": true,
+    "seccomp-profile": "/etc/docker/seccomp-default.json",
+    "apparmor-profile": "docker-default",
+    "selinux-enabled": false,
+    "disable-legacy-registry": true,
+    "live-restore": true,
+    "userland-proxy": false,
+    "experimental": false,
+    "metrics-addr": "127.0.0.1:9323",
+    "log-driver": "json-file",
+    "log-opts": {
+        "max-size": "10m",
+        "max-file": "3"
+    },
+    "storage-driver": "overlay2",
+    "storage-opts": [
+        "overlay2.override_kernel_check=true"
+    ]
+}
+EOF
+    
+    log_action "Container security configured"
+}
+
+# Memory protection features (2025 standards)
+setup_memory_protection() {
+    log_action "Setting up memory protection features..."
+    
+    # Configure kernel memory protection
+    cat >> /etc/sysctl.d/99-orangepi-memory-protection.conf << 'EOF'
+# Memory protection settings
+kernel.dmesg_restrict = 1
+kernel.kptr_restrict = 2
+kernel.yama.ptrace_scope = 1
+kernel.perf_event_paranoid = 2
+kernel.randomize_va_space = 2
+
+# Memory overcommit protection
+vm.overcommit_memory = 2
+vm.overcommit_ratio = 80
+
+# Swap security
+vm.swappiness = 1
+
+# Network memory protection
+net.core.bpf_jit_harden = 2
+EOF
+
+    log_action "Memory protection configured"
+}
+
+# Structured logging and audit (modern approach)
+setup_structured_logging() {
+    log_action "Setting up structured logging and audit..."
+    
+    # Install and configure auditd
+    apt-get install -y auditd audispd-plugins
+    
+    # Configure audit rules for security monitoring
+    cat > /etc/audit/rules.d/orangepi-security.rules << 'EOF'
+# Orange Pi Security Audit Rules
+
+# Monitor authentication
+-w /etc/passwd -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/sudoers -p wa -k sudo_changes
+
+# Monitor network configuration
+-w /etc/network/interfaces -p wa -k network_changes
+-w /etc/systemd/network/ -p wa -k network_changes
+
+# Monitor crypto operations
+-w /etc/crypttab -p wa -k crypto_changes
+-w /boot/keyfile -p ra -k crypto_access
+
+# Monitor system administration
+-w /sbin/insmod -p x -k modules
+-w /sbin/rmmod -p x -k modules
+-w /sbin/modprobe -p x -k modules
+
+# Monitor privileged commands
+-a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=4294967295 -k mounts
+-a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -S renameat -F auid>=1000 -F auid!=4294967295 -k delete
+
+# Monitor LUKS operations
+-w /sbin/cryptsetup -p x -k luks_ops
+EOF
+
+    systemctl enable auditd
+    
+    log_action "Structured logging and audit configured"
+}
+
+# Intrusion detection system
+setup_intrusion_detection() {
+    log_action "Setting up intrusion detection..."
+    
+    # Install and configure fail2ban
+    apt-get install -y fail2ban
+    
+    cat > /etc/fail2ban/jail.local << 'EOF'
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 3
+backend = systemd
+
+[sshd]
+enabled = true
+port = ssh
+logpath = %(sshd_log)s
+backend = %(sshd_backend)s
+
+[orangepi-tamper]
+enabled = true
+port = all
+logpath = /var/log/orangepi-security.log
+maxretry = 1
+bantime = 86400
+findtime = 3600
+filter = orangepi-tamper
+
+[luks-access]
+enabled = true
+port = all
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 3600
+findtime = 600
+filter = luks-access
+EOF
+
+    # Create custom fail2ban filters
+    cat > /etc/fail2ban/filter.d/orangepi-tamper.conf << 'EOF'
+[Definition]
+failregex = ^.* CRITICAL: .*$
+ignoreregex =
+EOF
+
+    cat > /etc/fail2ban/filter.d/luks-access.conf << 'EOF'
+[Definition]
+failregex = ^.* LUKS .* failed.*$
+ignoreregex =
+EOF
+
+    systemctl enable fail2ban
+    
+    log_action "Intrusion detection configured"
+}
+
+# File integrity monitoring
+setup_file_integrity() {
+    log_action "Setting up file integrity monitoring..."
+    
+    # Install and configure AIDE (Advanced Intrusion Detection Environment)
+    apt-get install -y aide
+    
+    # Initialize AIDE database
+    aideinit
+    
+    # Create daily integrity check
+    cat > /etc/cron.daily/aide-check << 'EOF'
+#!/bin/bash
+# AIDE integrity check
+/usr/bin/aide --check --config=/etc/aide/aide.conf | logger -t aide
+EOF
+    
+    chmod +x /etc/cron.daily/aide-check
+    
+    log_action "File integrity monitoring configured"
+}
+
+# Hardware security features
+setup_hardware_security() {
+    log_action "Setting up hardware security features..."
+    
+    # Enable ARM pointer authentication if available
+    if grep -q "paca" /proc/cpuinfo 2>/dev/null; then
+        log_action "ARM pointer authentication detected"
+        echo "kernel.pointer_auth = 1" >> /etc/sysctl.d/99-orangepi-memory-protection.conf
+    fi
+    
+    # Configure CPU vulnerability mitigations
+    cat >> /etc/default/grub << 'EOF'
+# CPU vulnerability mitigations
+GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT mitigations=auto"
+EOF
+    
+    log_action "Hardware security features configured"
+}
+
+# Network security hardening
+setup_network_security() {
+    log_action "Setting up network security..."
+    
+    # Configure firewall with ufw
+    apt-get install -y ufw
+    
+    # Default policies
+    ufw default deny incoming
+    ufw default allow outgoing
+    
+    # Allow SSH (adjust port as needed)
+    ufw allow 22/tcp
+    
+    # Network security sysctl settings
+    cat > /etc/sysctl.d/99-orangepi-network-security.conf << 'EOF'
+# Network security settings
+net.ipv4.ip_forward = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.conf.default.log_martians = 1
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_timestamps = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv6.conf.default.accept_source_route = 0
+EOF
+    
+    log_action "Network security configured"
+}
+
+# AppArmor security profiles
+setup_apparmor() {
+    log_action "Setting up AppArmor security profiles..."
+    
+    apt-get install -y apparmor-profiles apparmor-utils
+    
+    # Enable AppArmor
+    systemctl enable apparmor
+    
+    # Set profiles to enforce mode
+    aa-enforce /etc/apparmor.d/*
+    
+    log_action "AppArmor configured"
+}
+
+# Main function
+main() {
+    log_action "Starting Orange Pi Zero3 enhanced security hardening..."
+    
+    # Check if running as root
+    if [ "$EUID" -ne 0 ]; then
+        echo "ERROR: This script must be run as root"
+        exit 1
+    fi
+    
+    # Update system
+    apt-get update
+    
+    # Apply hardening measures
+    setup_entropy_management
+    setup_memory_protection
+    setup_structured_logging
+    setup_intrusion_detection
+    setup_file_integrity
+    setup_hardware_security
+    setup_network_security
+    setup_container_security
+    setup_apparmor
+    
+    # Apply sysctl settings
+    sysctl -p /etc/sysctl.d/99-orangepi-*.conf
+    
+    log_action "Enhanced security hardening complete!"
+    echo ""
+    echo "=============================================="
+    echo "Orange Pi Zero3 Enhanced Security Complete!"
+    echo "=============================================="
+    echo ""
+    echo "Modern 2025 security features implemented:"
+    echo "- Enhanced entropy management with hardware RNG"
+    echo "- Memory protection and ASLR hardening"
+    echo "- Structured audit logging with auditd"
+    echo "- Intrusion detection with fail2ban"
+    echo "- File integrity monitoring with AIDE"
+    echo "- Network security hardening"
+    echo "- Container security enhancements"
+    echo "- AppArmor mandatory access control"
+    echo ""
+    echo "Logs available at: $LOGFILE"
+    echo ""
+    echo "Reboot recommended to apply all changes."
+}
+
+# Run main function
+main "$@"

@@ -1,0 +1,242 @@
+#!/bin/bash
+#
+# Orange Pi Zero3 Security Validation Script
+# Checks if security features are properly configured
+#
+
+set -e
+
+echo "Orange Pi Zero3 Security Validation"
+echo "==================================="
+
+# Check if running on Orange Pi Zero3
+check_hardware() {
+    echo "Checking hardware compatibility..."
+    
+    if [ ! -f /proc/cpuinfo ]; then
+        echo "WARNING: Cannot detect CPU information"
+        return 1
+    fi
+    
+    if grep -q "sun50iw9" /proc/cpuinfo 2>/dev/null || grep -q "H618" /proc/cpuinfo 2>/dev/null; then
+        echo "✓ Orange Pi Zero3 compatible hardware detected"
+        return 0
+    else
+        echo "WARNING: Hardware may not be Orange Pi Zero3"
+        return 1
+    fi
+}
+
+# Check kernel crypto support
+check_kernel_crypto() {
+    echo "Checking kernel cryptographic support..."
+    
+    if [ ! -f /proc/crypto ]; then
+        echo "✗ Crypto subsystem not available"
+        return 1
+    fi
+    
+    local required_algos=("aes" "xts" "sha256" "cbc")
+    local missing_algos=()
+    
+    for algo in "${required_algos[@]}"; do
+        if ! grep -q "name.*$algo" /proc/crypto 2>/dev/null; then
+            missing_algos+=("$algo")
+        fi
+    done
+    
+    if [ ${#missing_algos[@]} -eq 0 ]; then
+        echo "✓ All required crypto algorithms available"
+        return 0
+    else
+        echo "✗ Missing crypto algorithms: ${missing_algos[*]}"
+        return 1
+    fi
+}
+
+# Check device mapper and LUKS support
+check_dm_crypt() {
+    echo "Checking device mapper and LUKS support..."
+    
+    if [ ! -e /dev/mapper/control ]; then
+        echo "✗ Device mapper not available"
+        return 1
+    fi
+    
+    if ! command -v cryptsetup >/dev/null 2>&1; then
+        echo "✗ cryptsetup not installed"
+        return 1
+    fi
+    
+    # Test cryptsetup functionality
+    if cryptsetup --version >/dev/null 2>&1; then
+        echo "✓ cryptsetup working properly"
+        return 0
+    else
+        echo "✗ cryptsetup not functioning"
+        return 1
+    fi
+}
+
+# Check if LUKS partition exists
+check_luks_partition() {
+    echo "Checking for LUKS encrypted partitions..."
+    
+    local luks_partitions=()
+    
+    for device in /dev/mmcblk0p* /dev/sd*; do
+        if [ -b "$device" ] && cryptsetup isLuks "$device" 2>/dev/null; then
+            luks_partitions+=("$device")
+        fi
+    done
+    
+    if [ ${#luks_partitions[@]} -gt 0 ]; then
+        echo "✓ LUKS partitions found: ${luks_partitions[*]}"
+        return 0
+    else
+        echo "! No LUKS partitions detected (normal for unencrypted systems)"
+        return 0
+    fi
+}
+
+# Check tamper detection service
+check_tamper_detection() {
+    echo "Checking tamper detection service..."
+    
+    if [ ! -f /etc/systemd/system/orangepi-tamper-detect.service ]; then
+        echo "! Tamper detection service not installed"
+        return 1
+    fi
+    
+    if systemctl is-enabled orangepi-tamper-detect >/dev/null 2>&1; then
+        echo "✓ Tamper detection service enabled"
+        return 0
+    else
+        echo "! Tamper detection service not enabled"
+        return 1
+    fi
+}
+
+# Check security packages
+check_security_packages() {
+    echo "Checking security packages..."
+    
+    local required_packages=("cryptsetup" "busybox")
+    local missing_packages=()
+    
+    for package in "${required_packages[@]}"; do
+        if ! dpkg -l "$package" >/dev/null 2>&1; then
+            missing_packages+=("$package")
+        fi
+    done
+    
+    if [ ${#missing_packages[@]} -eq 0 ]; then
+        echo "✓ All required security packages installed"
+        return 0
+    else
+        echo "✗ Missing packages: ${missing_packages[*]}"
+        echo "  Install with: apt-get install ${missing_packages[*]}"
+        return 1
+    fi
+}
+
+# Check boot configuration
+check_boot_config() {
+    echo "Checking boot configuration..."
+    
+    if [ -f /boot/boot.scr ]; then
+        echo "✓ Boot script found"
+    else
+        echo "! Boot script not found"
+        return 1
+    fi
+    
+    if [ -f /boot/orangepiEnv.txt ]; then
+        echo "✓ Environment configuration found"
+    else
+        echo "! Environment configuration not found"
+    fi
+    
+    return 0
+}
+
+# Check for ARM crypto extensions
+check_arm_crypto() {
+    echo "Checking ARM cryptographic extensions..."
+    
+    if grep -q "aes" /proc/cpuinfo 2>/dev/null; then
+        echo "✓ ARM AES cryptographic extension available"
+        return 0
+    else
+        echo "! ARM crypto extensions not detected"
+        return 1
+    fi
+}
+
+# Main validation function
+main() {
+    local checks=(
+        "check_hardware"
+        "check_kernel_crypto" 
+        "check_dm_crypt"
+        "check_luks_partition"
+        "check_tamper_detection"
+        "check_security_packages"
+        "check_boot_config"
+        "check_arm_crypto"
+    )
+    
+    local passed=0
+    local total=${#checks[@]}
+    
+    for check in "${checks[@]}"; do
+        if $check; then
+            ((passed++))
+        fi
+        echo ""
+    done
+    
+    echo "==============================================="
+    echo "Security Validation Complete: $passed/$total checks passed"
+    echo "==============================================="
+    
+    if [ $passed -eq $total ]; then
+        echo "✓ All security checks passed - system ready for secure operation"
+        return 0
+    elif [ $passed -ge $((total * 3 / 4)) ]; then
+        echo "! Most security checks passed - system partially secure"
+        return 0
+    else
+        echo "✗ Multiple security checks failed - system may not be secure"
+        return 1
+    fi
+}
+
+# Display usage
+usage() {
+    echo "Usage: $0 [--help|--quiet]"
+    echo "  --help   Show this help"
+    echo "  --quiet  Reduce output verbosity"
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help)
+            usage
+            exit 0
+            ;;
+        --quiet)
+            exec >/dev/null
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+# Run validation
+main

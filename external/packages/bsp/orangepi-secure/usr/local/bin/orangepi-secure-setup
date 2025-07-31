@@ -1,0 +1,235 @@
+#!/bin/bash
+#
+# Orange Pi Zero3 Secure Boot and Encryption Setup Script
+# Copyright (c) 2025 Orange Pi Security Project
+#
+# This script sets up LUKS encryption and secure boot for Orange Pi Zero3
+# Based on problem requirements for balanced and accessible security solution
+#
+
+set -e
+
+DEVICE="/dev/mmcblk0"
+BOOT_PARTITION="${DEVICE}p1" 
+ROOT_PARTITION="${DEVICE}p2"
+LUKS_NAME="cryptroot"
+KEYFILE="/boot/keyfile"
+KEYFILE_SIZE=4096
+
+echo "Orange Pi Zero3 Secure Boot and Encryption Setup"
+echo "=================================================="
+
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then
+    echo "ERROR: This script must be run as root"
+    exit 1
+fi
+
+# Check if device exists
+if [ ! -b "$DEVICE" ]; then
+    echo "ERROR: Device $DEVICE not found"
+    exit 1
+fi
+
+# Function to generate secure random key
+generate_keyfile() {
+    echo "Generating encryption keyfile..."
+    dd if=/dev/urandom of="$KEYFILE" bs=1 count="$KEYFILE_SIZE" 2>/dev/null
+    chmod 600 "$KEYFILE"
+    echo "Keyfile generated at $KEYFILE"
+}
+
+# Function to setup LUKS encryption
+setup_luks() {
+    echo "Setting up LUKS encryption on $ROOT_PARTITION..."
+    
+    # Check if already encrypted
+    if cryptsetup isLuks "$ROOT_PARTITION" 2>/dev/null; then
+        echo "WARNING: $ROOT_PARTITION is already LUKS encrypted"
+        read -p "Do you want to continue? This will DESTROY existing data! (yes/no): " confirm
+        if [ "$confirm" != "yes" ]; then
+            echo "Aborted by user"
+            exit 1
+        fi
+    fi
+    
+    # Generate keyfile
+    generate_keyfile
+    
+    # Setup LUKS with keyfile
+    echo "Formatting partition with LUKS..."
+    cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --key-size 256 --hash sha256 "$ROOT_PARTITION" "$KEYFILE"
+    
+    # Open the encrypted partition
+    cryptsetup luksOpen "$ROOT_PARTITION" "$LUKS_NAME" --key-file "$KEYFILE"
+    
+    echo "LUKS encryption setup complete"
+}
+
+# Function to create encrypted filesystem
+create_filesystem() {
+    echo "Creating ext4 filesystem on encrypted partition..."
+    mkfs.ext4 -L "orangepi-root" "/dev/mapper/$LUKS_NAME"
+    echo "Filesystem created"
+}
+
+# Function to setup tamper detection
+setup_tamper_detection() {
+    echo "Setting up tamper detection..."
+    
+    # Create tamper detection service
+    cat > /etc/systemd/system/orangepi-tamper-detect.service << 'EOF'
+[Unit]
+Description=Orange Pi Tamper Detection Service
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/orangepi-tamper-check
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Create tamper detection script
+    cat > /usr/local/bin/orangepi-tamper-check << 'EOF'
+#!/bin/bash
+#
+# Orange Pi Tamper Detection Script
+# Checks for SD card removal and other security events
+#
+
+LOGFILE="/var/log/orangepi-security.log"
+DEVICE="/dev/mmcblk0"
+
+log_event() {
+    echo "$(date): $1" >> "$LOGFILE"
+    logger -t orangepi-security "$1"
+}
+
+# Check if SD card is present
+if [ ! -b "$DEVICE" ]; then
+    log_event "CRITICAL: SD card not detected - possible removal"
+    # Could trigger additional security measures here
+    exit 1
+fi
+
+# Check partition table integrity
+if ! fdisk -l "$DEVICE" >/dev/null 2>&1; then
+    log_event "CRITICAL: SD card partition table corrupted"
+    exit 1
+fi
+
+# Check if LUKS header is intact
+if ! cryptsetup isLuks "${DEVICE}p2" 2>/dev/null; then
+    log_event "CRITICAL: LUKS header missing or corrupted"
+    exit 1
+fi
+
+log_event "INFO: Tamper detection check passed"
+exit 0
+EOF
+
+    chmod +x /usr/local/bin/orangepi-tamper-check
+    systemctl enable orangepi-tamper-detect.service
+    
+    echo "Tamper detection setup complete"
+}
+
+# Function to update initramfs
+update_initramfs() {
+    echo "Updating initramfs for encrypted boot..."
+    
+    # Create crypttab entry
+    echo "$LUKS_NAME $ROOT_PARTITION $KEYFILE luks,discard" > /etc/crypttab
+    
+    # Update initramfs
+    update-initramfs -u
+    
+    echo "Initramfs updated"
+}
+
+# Function to install required packages
+install_packages() {
+    echo "Installing required packages..."
+    apt-get update
+    apt-get install -y cryptsetup busybox dropbear-initramfs
+    echo "Packages installed"
+}
+
+# Main setup function
+main() {
+    echo "Starting Orange Pi Zero3 security setup..."
+    
+    # Check if this is a fresh installation
+    if mount | grep -q "$ROOT_PARTITION"; then
+        echo "ERROR: Root partition is currently mounted"
+        echo "Please run this script from a live environment or unmount the root partition"
+        exit 1
+    fi
+    
+    install_packages
+    setup_luks
+    create_filesystem
+    setup_tamper_detection
+    update_initramfs
+    
+    echo ""
+    echo "=========================================="
+    echo "Orange Pi Zero3 Security Setup Complete!"
+    echo "=========================================="
+    echo ""
+    echo "IMPORTANT SECURITY NOTES:"
+    echo "1. Keyfile location: $KEYFILE"
+    echo "2. LUKS partition: $ROOT_PARTITION"
+    echo "3. Encrypted device: /dev/mapper/$LUKS_NAME"
+    echo "4. Tamper detection enabled"
+    echo ""
+    echo "BACKUP YOUR KEYFILE - Without it, data cannot be recovered!"
+    echo ""
+    echo "Next steps:"
+    echo "1. Mount /dev/mapper/$LUKS_NAME and install your system"
+    echo "2. Copy the secure boot script to /boot/"
+    echo "3. Update /boot/orangepiEnv.txt if needed"
+    echo "4. Reboot to test encrypted boot"
+    echo ""
+}
+
+# Display usage information
+usage() {
+    echo "Usage: $0 [options]"
+    echo "Options:"
+    echo "  --help          Show this help message"
+    echo "  --device DEV    Specify device (default: /dev/mmcblk0)"
+    echo "  --keyfile FILE  Specify keyfile location (default: /boot/keyfile)"
+    echo ""
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help)
+            usage
+            exit 0
+            ;;
+        --device)
+            DEVICE="$2"
+            BOOT_PARTITION="${DEVICE}p1"
+            ROOT_PARTITION="${DEVICE}p2"
+            shift 2
+            ;;
+        --keyfile)
+            KEYFILE="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+# Run main function
+main

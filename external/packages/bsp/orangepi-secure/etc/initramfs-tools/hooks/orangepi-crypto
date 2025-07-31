@@ -1,0 +1,40 @@
+#!/bin/sh
+#
+# Orange Pi initramfs hook for cryptsetup
+# Ensures cryptsetup tools are available in initramfs for LUKS decryption
+#
+
+PREREQ=""
+
+prereqs() {
+    echo "$PREREQ"
+}
+
+case "$1" in
+    prereqs)
+        prereqs
+        exit 0
+        ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+# Copy cryptsetup binary
+copy_exec /sbin/cryptsetup /sbin
+
+# Copy required libraries
+for lib in $(ldd /sbin/cryptsetup | awk '/=>/ { print $3 }' | grep '^/'); do
+    copy_exec "$lib"
+done
+
+# Copy keyfile if it exists
+if [ -f /boot/keyfile ]; then
+    cp /boot/keyfile "${DESTDIR}/keyfile"
+    chmod 600 "${DESTDIR}/keyfile"
+fi
+
+# Ensure device mapper support
+manual_add_modules dm-mod
+manual_add_modules dm-crypt
+
+exit 0
